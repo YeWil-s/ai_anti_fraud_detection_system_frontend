@@ -74,6 +74,9 @@ class RealTimeDetectionService {
   Function(Map<String, dynamic>)? onControlMessage;   // 控制消息回调（防御升级等）
   Function(String, String)? onAckReceived;            // ACK 确认回调
   Function(int)? onDefenseLevelChanged;               // 防御等级变化回调
+  Function(Map<String, dynamic>)? onEnvironmentDetected; // 环境识别回调
+  Function(Map<String, dynamic>)? onFamilyAlert;      // ✅ 家庭预警回调（管理员接收）
+  Function(Map<String, dynamic>)? onEmergencyAlert;   // ✅ 紧急报警回调
   
   // WebSocket URL - 动态获取，与 HTTP 地址保持一致
   String get _wsBaseUrl {
@@ -459,6 +462,76 @@ class RealTimeDetectionService {
           final statusMsg = data['message'] ?? '';
           print('📊 状态更新: $statusMsg');
           onStatusChange?.call(statusMsg);
+          break;
+          
+        case 'environment_detected':
+          // 环境识别结果
+          final environment = data['environment'] ?? 'unknown';
+          final platform = data['platform'] ?? 'unknown';
+          final speakers = data['chat_speakers'] ?? [];
+          final enabledModalities = data['enabled_modalities'] ?? [];
+          
+          print('🌍 环境识别结果:');
+          print('   环境类型: $environment');
+          print('   平台: $platform');
+          print('   聊天双方: $speakers');
+          print('   启用模态: $enabledModalities');
+          
+          onEnvironmentDetected?.call({
+            'environment': environment,
+            'platform': platform,
+            'chat_speakers': speakers,
+            'enabled_modalities': enabledModalities,
+            'timestamp': data['timestamp'] ?? '',
+          });
+          break;
+          
+        case 'family_alert':
+          // ✅ 家庭预警（管理员接收）
+          final alertData = data['data'] ?? {};
+          print('🚨 收到家庭预警:');
+          print('   标题: ${alertData['title']}');
+          print('   消息: ${alertData['message']}');
+          print('   风险等级: ${alertData['risk_level']}');
+          print('   显示模式: ${alertData['display_mode']}');
+          print('   动作: ${alertData['action']}');
+          
+          onFamilyAlert?.call({
+            'title': alertData['title'] ?? '家人安全预警',
+            'message': alertData['message'] ?? '',
+            'risk_level': alertData['risk_level'] ?? 'medium',
+            'victim_id': alertData['victim_id'],
+            'victim_name': alertData['victim_name'] ?? '未知',
+            'victim_phone': alertData['victim_phone'],
+            'call_id': alertData['call_id'],
+            'family_id': alertData['family_id'],
+            'timestamp': alertData['timestamp'] ?? '',
+            'display_mode': alertData['display_mode'] ?? 'popup',
+            'action': alertData['action'] ?? 'vibrate',
+          });
+          break;
+          
+        case 'emergency_alert':
+          // ✅ 紧急报警（一键报警）
+          final alertData = data['data'] ?? {};
+          print('🆘 收到紧急报警:');
+          print('   标题: ${alertData['title']}');
+          print('   消息: ${alertData['message']}');
+          print('   受害者: ${alertData['victim_name']}');
+          
+          onEmergencyAlert?.call({
+            'title': alertData['title'] ?? '🚨 紧急报警',
+            'message': alertData['message'] ?? '',
+            'victim_id': alertData['victim_id'],
+            'victim_name': alertData['victim_name'] ?? '未知',
+            'victim_phone': alertData['victim_phone'],
+            'call_id': alertData['call_id'],
+            'family_id': alertData['family_id'],
+            'timestamp': alertData['timestamp'] ?? '',
+            'display_mode': alertData['display_mode'] ?? 'fullscreen',
+            'action': alertData['action'] ?? 'alarm',
+            'alert_type': alertData['alert_type'] ?? 'emergency',
+          });
           break;
           
         default:

@@ -60,6 +60,7 @@ dependencies:
   hyper_effects: ^0.3.0+1
   table_calendar: ^3.2.0
   timeline_tile: ^2.0.0
+  url_launcher: ^6.2.5
 
 dev_dependencies:
   flutter_test:

@@ -6,6 +6,9 @@ import 'package:ai_anti_fraud_detection_system_frontend/pages/Family/index.dart'
 import 'package:ai_anti_fraud_detection_system_frontend/pages/Profile/index.dart';
 import 'package:ai_anti_fraud_detection_system_frontend/pages/Test/index.dart';
 import 'package:ai_anti_fraud_detection_system_frontend/utils/PermissionManager.dart';
+import 'package:ai_anti_fraud_detection_system_frontend/services/RealTimeDetectionService.dart';
+import 'package:ai_anti_fraud_detection_system_frontend/services/family_alert_manager.dart';
+import 'package:ai_anti_fraud_detection_system_frontend/components/floating_alert_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:convex_bottom_bar/convex_bottom_bar.dart';
 
@@ -21,6 +24,10 @@ class _MainPageState extends State<MainPage> {
   final PermissionManager _permissionManager = PermissionManager();
   bool _hasRequestedPermissions = false;
   final GlobalKey<ConvexAppBarState> _barKey = GlobalKey<ConvexAppBarState>();
+  
+  // ✅ 家庭预警管理器
+  final FamilyAlertManager _familyAlertManager = FamilyAlertManager();
+  final FloatingAlertManager _floatingAlertManager = FloatingAlertManager();
 
   void _switchTab(int index) {
     setState(() => _currentIndex = index);
@@ -39,6 +46,75 @@ class _MainPageState extends State<MainPage> {
   void initState() {
     super.initState();
     _checkAndRequestPermissions();
+    
+    // ✅ 初始化家庭预警监听（延迟初始化，等待 DetectionPage 创建服务）
+    Future.delayed(Duration(seconds: 2), () {
+      _initFamilyAlertListener();
+    });
+  }
+  
+  /// ✅ 初始化家庭预警监听
+  void _initFamilyAlertListener() {
+    // 获取 DetectionPage 中的服务实例
+    // 注意：这里使用了一个全局可访问的方式，实际项目中可以使用 Provider 或 GetIt
+    print('🔔 初始化家庭预警监听...');
+    
+    // 监听家庭预警流
+    _familyAlertManager.alertStream.listen((alertData) {
+      if (!mounted) return;
+      
+      print('🚨 MainPage 收到家庭预警，显示警告');
+      
+      final displayMode = alertData['display_mode'] ?? 'popup';
+      final action = alertData['action'] ?? 'none';
+      final victimPhone = alertData['victim_phone'];
+      
+      // 根据显示模式显示不同警告
+      if (displayMode == 'fullscreen') {
+        // 全屏警告（Level 3）
+        _familyAlertManager.showFullScreenAlert(
+          context,
+          alertData,
+          onDismiss: () {
+            _floatingAlertManager.hide();
+          },
+        );
+      } else if (displayMode == 'popup') {
+        // 弹窗警告（Level 2）
+        _familyAlertManager.showPopupAlert(
+          context,
+          alertData,
+          onDismiss: () {
+            // 弹窗关闭后显示悬浮窗
+            _showFloatingAlert(alertData);
+          },
+        );
+      } else {
+        // Toast 提示（Level 1）- 只显示悬浮窗
+        _showFloatingAlert(alertData);
+      }
+    });
+  }
+  
+  /// ✅ 显示悬浮预警
+  void _showFloatingAlert(Map<String, dynamic> alertData) {
+    final victimPhone = alertData['victim_phone'];
+    
+    _floatingAlertManager.show(
+      context,
+      victimName: alertData['victim_name'] ?? '未知',
+      victimPhone: victimPhone,
+      message: alertData['message'] ?? '',
+      riskLevel: alertData['risk_level'] ?? 'high',
+      onCall: () {
+        if (victimPhone != null) {
+          _familyAlertManager.makeEmergencyCall(victimPhone);
+        }
+      },
+      onDismiss: () {
+        print('悬浮预警已关闭');
+      },
+    );
   }
 
   /// 检查并请求权限（仅首次启动）

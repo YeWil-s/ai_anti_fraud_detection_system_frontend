@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:ai_anti_fraud_detection_system_frontend/contants/theme.dart';
+import 'package:ai_anti_fraud_detection_system_frontend/contants/index.dart';
 import 'package:ai_anti_fraud_detection_system_frontend/utils/PermissionManager.dart';
 import 'package:ai_anti_fraud_detection_system_frontend/services/RealTimeDetectionService.dart';
+import 'package:ai_anti_fraud_detection_system_frontend/services/detection_task_manager.dart';
+import 'package:ai_anti_fraud_detection_system_frontend/services/family_alert_manager.dart';
+import 'package:ai_anti_fraud_detection_system_frontend/services/auth_service.dart';
+import 'package:ai_anti_fraud_detection_system_frontend/components/environment_indicator.dart';
+import 'package:ai_anti_fraud_detection_system_frontend/components/detection_floating_widget.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:get/get.dart';
 import 'package:action_slider/action_slider.dart';
 import 'package:step_progress_indicator/step_progress_indicator.dart';
+import 'package:dio/dio.dart';
 import 'dart:math' as math;
 
 class DetectionPage extends StatefulWidget {
@@ -64,6 +71,18 @@ class _DetectionPageState extends State<DetectionPage> with TickerProviderStateM
   // 实时检测服务
   final RealTimeDetectionService _detectionService = RealTimeDetectionService();
   
+  // ✅ 检测任务管理器（环境感知）
+  final DetectionTaskManager _taskManager = DetectionTaskManager();
+  
+  // ✅ 常驻悬浮窗管理器
+  final DetectionFloatingManager _floatingManager = DetectionFloatingManager();
+  
+  // ✅ 当前通话环境
+  String _currentEnvironment = 'unknown';
+  String _currentPlatform = 'unknown';
+  List<Map<String, dynamic>> _chatSpeakers = [];
+  List<String> _enabledModalities = [];
+  
   // 真实音频波形数据
   List<double> _realAudioWaveform = List.filled(50, 0.0);
   
@@ -97,6 +116,39 @@ class _DetectionPageState extends State<DetectionPage> with TickerProviderStateM
     
     // ✅ 添加前台服务监听
     _initForegroundTask();
+    
+    // ✅ 初始化家庭预警管理器（连接 WebSocket）
+    _initFamilyAlertManager();
+  }
+  
+  /// ✅ 初始化家庭预警管理器
+  void _initFamilyAlertManager() {
+    final familyAlertManager = FamilyAlertManager();
+    familyAlertManager.initialize(_detectionService);
+    print('✅ DetectionPage: 家庭预警管理器已连接');
+  }
+  
+  /// ✅ 更新常驻悬浮窗
+  void _updateFloatingWidget() {
+    final isMonitoring = _currentState == DetectionState.monitoring ||
+                         _currentState == DetectionState.warning;
+    
+    if (isMonitoring && mounted) {
+      _floatingManager.show(
+        context,
+        isMonitoring: true,
+        defenseLevel: _currentDefenseLevel,
+        callRecordId: _detectionService.callRecordId,
+        onEmergencyTap: () {
+          _triggerEmergencyAlert();
+        },
+        onExpandTap: () {
+          print('悬浮窗展开');
+        },
+      );
+    } else {
+      _floatingManager.hide();
+    }
   }
   
   /// ✅ 初始化前台服务监听
@@ -254,6 +306,16 @@ class _DetectionPageState extends State<DetectionPage> with TickerProviderStateM
           _currentDefenseLevel = level;
         });
         print('🛡️ UI 防御等级已更新: Level $level');
+        
+        // 更新悬浮窗
+        _updateFloatingWidget();
+      }
+    };
+    
+    // ✅ 环境识别回调
+    _detectionService.onEnvironmentDetected = (environmentData) {
+      if (mounted) {
+        _handleEnvironmentDetected(environmentData);
       }
     };
     
@@ -363,6 +425,9 @@ class _DetectionPageState extends State<DetectionPage> with TickerProviderStateM
           _statusMessage = '监测中...';
         });
         
+        // ✅ 显示常驻悬浮窗
+        _updateFloatingWidget();
+        
         // ✅ 使用 ScaffoldMessenger 替代 Get.snackbar，避免 context 问题
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -414,7 +479,17 @@ class _DetectionPageState extends State<DetectionPage> with TickerProviderStateM
         _textKeywords = [];
         _overallRisk = RiskLevel.safe;
         _currentDefenseLevel = 1; // ✅ 重置防御等级
+        _currentEnvironment = 'unknown'; // ✅ 重置环境
+        _currentPlatform = 'unknown';
+        _chatSpeakers = [];
+        _enabledModalities = [];
       });
+      
+      // ✅ 停止所有检测任务
+      _taskManager.stopAllTasks();
+      
+      // ✅ 隐藏常驻悬浮窗
+      _floatingManager.hide();
       
       // ✅ 展示截图
       if (screenshots.isNotEmpty) {
@@ -952,6 +1027,224 @@ class _DetectionPageState extends State<DetectionPage> with TickerProviderStateM
     );
   }
   
+  // ✅ 解析环境字符串为枚举
+  CallEnvironment _parseCallEnvironment(String environment) {
+    switch (environment) {
+      case 'text_chat':
+        return CallEnvironment.textChat;
+      case 'voice_chat':
+        return CallEnvironment.voiceChat;
+      case 'phone_call':
+        return CallEnvironment.phoneCall;
+      case 'video_call':
+        return CallEnvironment.videoCall;
+      default:
+        return CallEnvironment.unknown;
+    }
+  }
+  
+  // ✅ 解析模态字符串列表为枚举列表
+  List<DetectionTaskType> _parseModalities(List<String> modalities) {
+    return modalities.map((m) {
+      switch (m) {
+        case 'text':
+          return DetectionTaskType.text;
+        case 'audio':
+          return DetectionTaskType.audio;
+        case 'vision':
+        case 'video':
+          return DetectionTaskType.video;
+        case 'screenshot':
+          return DetectionTaskType.screenshot;
+        default:
+          return DetectionTaskType.screenshot;
+      }
+    }).toList();
+  }
+  
+  // ✅ 获取环境描述
+  String _getEnvironmentDescription(String environment, String platform) {
+    switch (environment) {
+      case 'text_chat':
+        return '$platform 文字聊天';
+      case 'voice_chat':
+        return '$platform 语音聊天';
+      case 'phone_call':
+        return '电话通话';
+      case 'video_call':
+        return '$platform 视频通话';
+      default:
+        return '未知环境';
+    }
+  }
+  
+  // ✅ 处理环境识别结果
+  void _handleEnvironmentDetected(Map<String, dynamic> environmentData) {
+    final environment = environmentData['environment'] ?? 'unknown';
+    final platform = environmentData['platform'] ?? 'unknown';
+    final speakers = List<Map<String, dynamic>>.from(environmentData['chat_speakers'] ?? []);
+    final modalities = List<String>.from(environmentData['enabled_modalities'] ?? []);
+    
+    print('🌍 处理环境识别结果:');
+    print('   环境: $environment');
+    print('   平台: $platform');
+    print('   聊天双方: $speakers');
+    print('   启用模态: $modalities');
+    
+    setState(() {
+      _currentEnvironment = environment;
+      _currentPlatform = platform;
+      _chatSpeakers = speakers;
+      _enabledModalities = modalities;
+    });
+    
+    // 根据环境更新检测任务
+    _taskManager.updateEnvironment(
+      EnvironmentInfo(
+        environment: _parseCallEnvironment(environment),
+        platform: platform,
+        description: _getEnvironmentDescription(environment, platform),
+        activeTasks: _parseModalities(modalities),
+        weights: {},
+        isTextChat: environment == 'text_chat',
+        chatSpeakers: speakers.isNotEmpty ? {'speakers': speakers} : null,
+      ),
+    );
+    
+    // 显示环境识别提示
+    _showEnvironmentNotification(environment, platform);
+  }
+  
+  // ✅ 显示环境详情对话框
+  void _showEnvironmentDetails() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.info_outline, color: Colors.blue),
+            SizedBox(width: 8),
+            Text('环境详情'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildDetailRow('环境类型', _getEnvironmentDescription(_currentEnvironment, _currentPlatform)),
+            _buildDetailRow('平台', _currentPlatform),
+            _buildDetailRow('启用模态', _enabledModalities.join(', ')),
+            if (_chatSpeakers.isNotEmpty) ...[
+              SizedBox(height: 12),
+              Text(
+                '聊天双方:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 8),
+              ..._chatSpeakers.map((speaker) => Padding(
+                padding: EdgeInsets.only(left: 16, bottom: 4),
+                child: Row(
+                  children: [
+                    Icon(
+                      speaker['is_user'] == true ? Icons.person : Icons.person_outline,
+                      size: 16,
+                      color: speaker['is_user'] == true ? Colors.green : Colors.orange,
+                    ),
+                    SizedBox(width: 8),
+                    Text(speaker['name'] ?? '未知'),
+                    if (speaker['role'] != null)
+                      Text(
+                        ' (${speaker['role']})',
+                        style: TextStyle(color: Colors.grey, fontSize: 12),
+                      ),
+                  ],
+                ),
+              )),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildDetailRow(String label, String value) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Text(
+            '$label: ',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          Text(value),
+        ],
+      ),
+    );
+  }
+  
+  // ✅ 显示环境识别提示
+  void _showEnvironmentNotification(String environment, String platform) {
+    String message;
+    IconData icon;
+    Color color;
+    
+    switch (environment) {
+      case 'text_chat':
+        message = '检测到文字聊天环境（$platform）';
+        icon = Icons.chat_bubble_outline;
+        color = Colors.blue;
+        break;
+      case 'voice_chat':
+        message = '检测到语音聊天环境（$platform）';
+        icon = Icons.mic;
+        color = Colors.green;
+        break;
+      case 'phone_call':
+        message = '检测到电话通话环境';
+        icon = Icons.phone;
+        color = Colors.orange;
+        break;
+      case 'video_call':
+        message = '检测到视频通话环境（$platform）';
+        icon = Icons.videocam;
+        color = Colors.purple;
+        break;
+      default:
+        message = '正在识别通话环境...';
+        icon = Icons.help_outline;
+        color = Colors.grey;
+    }
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(icon, color: Colors.white),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: TextStyle(fontSize: 14),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: color,
+        duration: Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    );
+  }
+  
   // 计算综合风险等级
   RiskLevel _calculateOverallRisk() {
     // 严重风险：音频或视频检测到伪造且置信度高
@@ -1009,6 +1302,29 @@ class _DetectionPageState extends State<DetectionPage> with TickerProviderStateM
               padding: EdgeInsets.all(20),
               child: Column(
                 children: [
+                  // ✅ 环境指示器（仅在检测到环境后显示）
+                  if (_currentEnvironment != 'unknown')
+                    EnvironmentIndicator(
+                      environment: EnvironmentInfo(
+                        environment: _parseCallEnvironment(_currentEnvironment),
+                        platform: _currentPlatform,
+                        description: _getEnvironmentDescription(_currentEnvironment, _currentPlatform),
+                        activeTasks: _parseModalities(_enabledModalities),
+                        weights: {},
+                        isTextChat: _currentEnvironment == 'text_chat',
+                        chatSpeakers: _chatSpeakers.isNotEmpty 
+                            ? {'user': _chatSpeakers[0]['name'] ?? '我', 'other': _chatSpeakers.length > 1 ? _chatSpeakers[1]['name'] ?? '对方' : '对方'}
+                            : null,
+                      ),
+                      onTap: () {
+                        // 点击可查看详细环境信息
+                        _showEnvironmentDetails();
+                      },
+                    ),
+                  
+                  if (_currentEnvironment != 'unknown')
+                    SizedBox(height: 12),
+                  
                   // 上部留白，让主卡片居中
                   Spacer(flex: 2),
                   
@@ -1744,6 +2060,159 @@ class _DetectionPageState extends State<DetectionPage> with TickerProviderStateM
         ),
       ),
     );
+  }
+  
+  // ✅ 一键报警按钮
+  Widget _buildEmergencyButton() {
+    return GestureDetector(
+      onTap: _triggerEmergencyAlert,
+      child: Container(
+        width: double.infinity,
+        height: 48,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Color(0xFFDC2626), // 红色
+              Color(0xFFB91C1C), // 深红色
+            ],
+          ),
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [
+            BoxShadow(
+              color: Color(0xFFDC2626).withOpacity(0.4),
+              blurRadius: 12,
+              spreadRadius: 2,
+              offset: Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.emergency,
+              color: Colors.white,
+              size: 20,
+            ),
+            SizedBox(width: 8),
+            Text(
+              '一键报警',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // ✅ 触发一键报警
+  Future<void> _triggerEmergencyAlert() async {
+    // 显示确认对话框
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.warning_amber, color: Colors.red),
+            SizedBox(width: 8),
+            Text('确认报警'),
+          ],
+        ),
+        content: Text(
+          '您确定要触发紧急报警吗？这将立即通知您的家庭组管理员。',
+          style: TextStyle(fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('取消'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: Text('确认报警'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    // 获取当前通话记录ID
+    final callId = _detectionService.callRecordId;
+    if (callId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('未找到当前通话记录，无法发送报警'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+    
+    // 显示加载中
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
+    
+    try {
+      // 调用一键报警 API
+      final dio = Dio();
+      final token = AuthService().getToken();
+      
+      final response = await dio.post(
+        '${GlobalConstants.BASE_URL}/api/call-records/$callId/emergency-alert',
+        data: {
+          'call_id': int.parse(callId),
+          'alert_type': 'emergency',
+          'message': '用户主动触发紧急报警，可能正在遭遇诈骗！',
+        },
+        options: Options(
+          headers: {
+            'Authorization': 'Bearer $token',
+          },
+        ),
+      );
+      
+      // 关闭加载对话框
+      Navigator.pop(context);
+      
+      if (response.statusCode == 200) {
+        final data = response.data;
+        final notifiedCount = data['data']?['notified_admins'] ?? 0;
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ 紧急报警已发送，已通知 $notifiedCount 位管理员'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      } else {
+        throw Exception('发送失败');
+      }
+    } catch (e) {
+      // 关闭加载对话框
+      Navigator.pop(context);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ 发送报警失败: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
   
   // 状态信息卡片

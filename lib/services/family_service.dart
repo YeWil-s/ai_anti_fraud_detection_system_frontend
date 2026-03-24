@@ -90,15 +90,26 @@ class FamilyService {
       final response = await dioRequest.get('/api/family/applications');
 
       if (response != null && response['code'] == 200) {
-        final data = response['data'] as List;
-        print('✅ 获取成功，共 ${data.length} 条申请');
-        return data.cast<Map<String, dynamic>>();
+        // 后端返回格式: {data: {items: []}}
+        final responseData = response['data'];
+        if (responseData is Map && responseData.containsKey('items')) {
+          final items = responseData['items'] as List;
+          print('✅ 获取成功，共 ${items.length} 条申请');
+          return items.cast<Map<String, dynamic>>();
+        }
+        // 兼容直接返回 List 的情况
+        if (responseData is List) {
+          print('✅ 获取成功，共 ${responseData.length} 条申请');
+          return responseData.cast<Map<String, dynamic>>();
+        }
+        return [];
       }
 
       return [];
     } catch (e) {
       print('❌ 获取申请列表失败: $e');
-      rethrow;
+      // 返回空列表而不是抛出异常，避免页面显示错误
+      return [];
     }
   }
 
