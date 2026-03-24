@@ -202,5 +202,63 @@ class FamilyService {
       return null;
     }
   }
+
+  /// 获取我管理的所有家庭组
+  /// 
+  /// 返回：
+  /// ```json
+  /// [
+  ///   {
+  ///     "family_id": 1,
+  ///     "group_name": "我的家庭",
+  ///     "my_role": "primary",
+  ///     "member_count": 3,
+  ///     "created_at": "2026-01-01T00:00:00"
+  ///   }
+  /// ]
+  /// ```
+  Future<List<Map<String, dynamic>>> getMyAdminFamilies() async {
+    try {
+      print('👤 获取我管理的家庭组列表');
+      
+      final response = await dioRequest.get('/api/family/my-admin-families');
+
+      if (response != null && response['code'] == 200) {
+        final data = response['data']['items'] as List;
+        print('✅ 获取成功，共 ${data.length} 个家庭组');
+        return data.cast<Map<String, dynamic>>();
+      }
+
+      return [];
+    } catch (e) {
+      print('❌ 获取管理的家庭组列表失败: $e');
+      rethrow;
+    }
+  }
+
+  /// 获取指定家庭组的成员列表
+  /// 
+  /// [familyId] 家庭组ID
+  Future<List<Map<String, dynamic>>> getMembersByFamilyId(int familyId) async {
+    try {
+      print('👥 获取家庭组 $familyId 的成员列表');
+      
+      final response = await dioRequest.get(
+        '/api/family/members',
+        params: {'family_id': familyId},
+      );
+
+      if (response != null && response['code'] == 200) {
+        final data = response['data']['members'] as List;
+        print('✅ 获取成功，共 ${data.length} 个成员');
+        return data.cast<Map<String, dynamic>>();
+      }
+
+      return [];
+    } catch (e) {
+      print('❌ 获取成员列表失败: $e');
+      rethrow;
+    }
+  }
 }
 
